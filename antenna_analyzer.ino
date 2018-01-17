@@ -49,6 +49,10 @@
  *    
  *    The 10 ohm resistor in the bridge could possibly be left out and the increased signal in the bridge
  *    may produce more accurate readings.
+ *    
+ *    Changes:
+ *    1/16/2018  Change the order of code execution to remove the need to set the switch state to DONE
+ *       everywhere.
  *
  */
 
@@ -238,10 +242,9 @@ void set_contrast(){
    switch(sw){
      case TAP:  contrast += 2;
      case DTAP: --contrast;  lcd.setCursor(2,1); lcd.print(contrast); lcd.write(' ');
-          sw = DONE;
           analogWrite(3,contrast); 
           break;
-     case LONGPRESS: ++mstate; sw = DONE; break;
+     case LONGPRESS: ++mstate;  break;
    }
 }
 
@@ -260,9 +263,8 @@ void set_mode(){
        lcd.setCursor(2,1);
        if( mode ) lcd.print("Freq Gen");
        else       lcd.print("Sweep   ");
-       sw = DONE;
     break;
-    case LONGPRESS: ++mstate; sw = DONE;
+    case LONGPRESS: ++mstate;
        if( mode ) mstate = 9;             // set up the freq gen mode
     break;  
   }  
@@ -286,9 +288,8 @@ void sweep_low(){
        if(start_freq % 1000000) lcd.write('5');
        else lcd.write('0');
        lcd.write(' ');  lcd.print("Mhz ");
-       sw = DONE;
        break;
-    case LONGPRESS: ++mstate;  sw = DONE; break;     
+    case LONGPRESS: ++mstate; break;     
   }
   
 }
@@ -312,9 +313,8 @@ void sweep_high(){
        if(end_freq % 1000000) lcd.write('5');
        else lcd.write('0');
        lcd.write(' ');  lcd.print("Mhz ");
-       sw = DONE;
        break;
-    case LONGPRESS: ++mstate;  sw = DONE;
+    case LONGPRESS: ++mstate;
        lcd.clear(); // lcd.print("Running Sweep"); delay(300);
        break;     
   }
@@ -341,7 +341,6 @@ byte count;
       if( freq < 10000000L ) lcd.write(' ');
       lcd.print(freq);  // lcd.write(' ');
       curs_pos( mult );
-      sw = DONE;
     break;
     case LONGPRESS:
       if( mult == 1 ){
@@ -352,8 +351,7 @@ byte count;
       else{
         mult /= 10;
         curs_pos(mult);
-      }
-    sw = DONE;  
+      }  
     break;
   }
 }
@@ -369,8 +367,20 @@ byte count;
 
 void loop() {
 static int count = 0;   
+unsigned long c;
 
-  switch(mstate){
+  // Check the switch once per millisecond.
+  c = millis() - timer;
+  if( c ){
+    timer += c;
+    while( c-- ) read_switch();    // catch up for any missed time due to delays or I2C slowness
+    // Timeout the contrast setting menu and advance to the next menu.
+    if( sw >= TAP ) count = 0;
+    else ++count;
+    if( mstate == 0 && count > 7000 ) ++mstate;   // 7 seconds     
+  }
+
+  switch(mstate){                               // run the current selected main function 
     case 0:  set_contrast();          break;
     case 1: case 2:  set_mode();      break;
     case 3: case 4:  sweep_low();     break;    // set sweep start
@@ -380,17 +390,8 @@ static int count = 0;
     case 11: case 12: freq_gen();     break;    // generating a single frequency, display swr                      
   }
 
-  // run this code each millisecond
-  if( timer != millis() ){
-    timer = millis();
-    read_switch();
-    // we are getting tired of pressing the switch for the contrast adjustment.
-    // time out this one menu.  If you are using a pot for contrast, change this to timeout
-    // in 1 msec.
-    if( sw >= TAP ) count = 0;
-    else ++count;
-    if( mstate == 0 && count > 7000 ) ++mstate;   // 7 seconds     
-  }
+  // all processes have had a chance to look at the switch state, so clear it.
+  if( sw == TAP || sw == DTAP || sw == LONGPRESS ) sw = DONE;
 
 }
 
@@ -431,21 +432,19 @@ byte c;
 static byte csv_active = 0;
 
   if( sw == LONGPRESS ){    // check if user cancel 
-    mstate = 1;   sw = DONE;
+    mstate = 1;
     si5351aOutputOff(SI_CLK0_CONTROL);
     return;
   }
   else if( sw == TAP ){     // the switch here does two functions, moves the range and starts the CSV export
                             // since we only have one switch perhaps this is ok.
     start_freq += 500000L;   end_freq += 500000L;
-    csv_active = 1;   mstate = 7;      // force a restart of the sweep for the CSV
-    sw = DONE;  
+    csv_active = 1;   mstate = 7;      // force a restart of the sweep for the CSV  
   }
   else if( sw == DTAP ){
     start_freq -= 500000L;  end_freq -= 500000L;
     // csv_active = 1;      // only export on tap, so to get an export of the original range: dtap then tap.
     mstate = 7;
-    sw = DONE;
   }
 
   if( mstate == 7 ){     // start sweep
@@ -521,17 +520,15 @@ byte b,c;
   last_time = timer;
   
   if( sw == LONGPRESS ){
-    mstate = 1;  sw = DONE;
+    mstate = 1;
     si5351aOutputOff(SI_CLK0_CONTROL);
     return;
   }
   else if( sw == TAP ){
-     sw = DONE;
      freq += 10000L;
      mstate = 11;       // force to setup the new frequency
   }
   else if( sw == DTAP ){
-    sw = DONE;
     freq -= 10000L;
     mstate = 11;
   }
@@ -580,10 +577,7 @@ float fwd,rev;
 int val; byte i;
 float volts;
 
-   if( mode == 0 ){    // slow down scan so bridge has time to discharge
-     delay(1);
-     read_switch();   // key press timing correction because of the delay
-   }
+  if( mode == 0 ) delay(1);  // slow down scan so bridge has time to discharge
 
   val = 0;
   for(i = 0; i < 4; ++i){     // average a few readings
