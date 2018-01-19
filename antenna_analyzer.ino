@@ -5,7 +5,7 @@
  *    Measures SWR but not R and X.  
  *    Navigate menu's using a tap, double tap or long press of the single button switch.
  *      Generally Tap increased value, Double Tap decreased value, and Long Press moves to the next menu.
- *      If you have trouble getting started, try some long presses of about 1 second each.
+ *      If you have trouble getting started, try some long presses of about 1/2 second each.
  *    Two modes:  sweep and frequency generator.
  *      In sweep mode, switch tap or double tap will move the sweep range up or down 500 khz.  Also  
  *      the tap switch press will trigger an output of a CSV file( one export for each press ).
@@ -23,16 +23,28 @@
  *    
  *    The jumper W2 W3 was left open,  W2 is wired to the SWR bridge, and the output of the bridge is
  *    wired back to W3 to pick up the antenna connector as the unknown port of the bridge.
+ *    !!! But see option2 notes below.
  *    
  *    The bridge circuit is wired on the proto section of the arduino shield.
- *    
- *    TBD - how the bridge works with vs without a low pass filter.
- *    At this point, I have just a jumper in place, no low pass filter.
- *    
+ *        
  *    I hooked arduino pin 3 to the LCD contrast pin via a 1K resistor and 10uf cap to ground.  
  *    The contrast adjustment is made via PWM.  A regular pot could be used instead as is standard 
- *    with most displays.  The display is wired to arduino pins 6,7,8,10,11,12.  You can use different
+ *    with most displays.  The display is wired to arduino pins 4,6,8,10,11,12.  You can use different
  *    pins and just change the program if you wish.
+ *    
+ *    Bridge performance with and without a low pass filter feeding the bridge circuit.
+ *    The experiment consisted of feeding a T type antenna tuner.  The antenna was a 120 ohm resistor
+ *    as the rf load.  The tuner was adjusted for best SWR on a number of bands and using a number of low 
+ *    pass filters.  Results:
+ *      
+ *      Band    No Filter    30 lowpass    20 lowpass    10 lowpass
+ *               Jumper
+ *      80       2.0           1.3           1.3            1.7
+ *      40       1.8           1.0           1.0            1.7
+ *      30       1.4           1.0           1.0            1.0
+ *      20       1.0           xxx           1.0            1.0
+ *      15       1.0           xxx           xxx            1.0
+ *    To me, the 20 meter lowpass looks like a good compromise for low band work.
  *    
  * Notes: 
  * 
@@ -50,9 +62,18 @@
  *    The 10 ohm resistor in the bridge could possibly be left out and the increased signal in the bridge
  *    may produce more accurate readings.
  *    
+ *    Due to the way the W2 W3 jumper circuit was repurposed to place the bridge between the BS170 amp 
+ *    and the BNC connector( as the unknown port of the bridge ), the onboard relay and relay switched 
+ *    low pass filter kit could not be used.  ( to use those parts, the etch between W3 and the BNC connector
+ *    would need to be cut ).  I think allowing relay switched filters is a better way to use the board 
+ *    and am calling this Option2.  An option2 schematic was produced and the program changed to support 
+ *    3 relays.  ( Changing the LCD wiring could free up more band switching pins if desired )
+ *    
  *    Changes:
  *    1/16/2018  Change the order of code execution to remove the need to set the switch state to DONE
  *       everywhere.
+ *    1/18/2018  Relay switched lowpass filters supported with an alternate schematic and program changes.
+ *              ( note I changed the LCD wiring to free up pin 7 )
  *
  */
 
@@ -114,6 +135,17 @@ void si5351aSetFrequency(uint32_t frequency);
 #define LONGPRESS 5
 #define DONE 6
 
+// circuit option 2, use of relay switched filters.  If you don't use switched filters, you can just ignore
+// this code, it will cause no harm.   Supporting 3 filters.
+#define BAND0 7
+#define BAND1 A0
+#define BAND5 A3
+// change the frequency breaks for whatever filters you are using.  I am using just 2, 20 meters and 10 meters.
+#define FREQ_BREAK1 15000000L     // 20 meter filter used from 0 to 15 meg.   Band0
+#define FREQ_BREAK2 30000000L     // 10 meter filter used from 15 to 30 meg.  Band1
+                                  // 3rd filter is used above BREAK2          Band5 
+
+
 byte sw;     // current switch state  ( unsigned char )
 byte contrast = 20;  // contrast is set with PWM virtual pin 3
 byte mstate;  // current main function
@@ -125,7 +157,7 @@ unsigned long gen_freq = 14123456L;
 unsigned long start_freq = 5000000L;
 unsigned long end_freq = 10000000L;
 
-byte si5351_reset = 1;    // reset needed or ok to set the frequency without a reset
+byte si5351_reset = 1;    // flag for when SI5351 reset needed
 
 // custom fonts
 byte bar1[8] = {
@@ -198,17 +230,18 @@ byte bar7[8] = {
   B11111,
   B11111
 };
- 
-LiquidCrystal lcd(6, 7,   8, 10, 11, 12);
+
+// change this line if you wire the LCD differently
+LiquidCrystal lcd(4, 6,   8, 10, 11, 12);
 
   
 void setup() {
 
   analogWrite(3,contrast);        // LCD contrast via pwm
   Serial.begin(19200);            // CSV file export
-  // set up the LCD's number of rows and columns: 
-  lcd.begin(16, 2);
-  lcd.createChar(1, bar1);
+ 
+  lcd.begin(16, 2);               // set up the LCD's number of rows and columns:
+  lcd.createChar(1, bar1);        // load the custom fonts
   lcd.createChar(2, bar2);
   lcd.createChar(3, bar3);
   lcd.createChar(4, bar4);
@@ -222,7 +255,7 @@ void setup() {
   lcd.print("   Analyzer     ");
   delay(2000);
   lcd.setCursor(0,0);
-  lcd.print("Cmds: Long Press");
+  lcd.print("Cmds: Long Press");    // a reminder of what the push button does
   lcd.setCursor(0,1);
   lcd.print(" Tap,  Dbl Tap  ");
   delay(3000);
@@ -232,6 +265,13 @@ void setup() {
   lcd.print(contrast);
   
   pinMode(SW,INPUT_PULLUP);
+  pinMode(BAND0,OUTPUT);
+  pinMode(BAND1,OUTPUT);
+  pinMode(BAND5,OUTPUT);
+  digitalWrite(BAND0,HIGH);         // all relays off
+  digitalWrite(BAND1,HIGH);
+  digitalWrite(BAND5,HIGH);
+
   i2cInit();                             // Initialise I2C interface
   
 }
@@ -613,7 +653,21 @@ float volts;
   
 }
 
+// set the relays to pick one of the low pass filters.  Up to 3 currently supported.
+void set_band_relays(uint32_t freq){
+  byte i,j;
+  const byte relay_pattern[3] = {0b110, 0b101, 0b011 };
+  i = 0;
+  if( freq >= FREQ_BREAK1 ) ++i;
+  if( freq >= FREQ_BREAK2 ) ++i;
 
+  j = relay_pattern[i];
+  digitalWrite(BAND0, j & 1 );
+  j >>= 1;
+  digitalWrite(BAND1, j & 1 );
+  j >>= 1;
+  digitalWrite(BAND5, j & 1 ); 
+}
 /*****************************************************************/
 
 //  Hans Summers  QRP-LABS code for SI5351 and I2C
@@ -772,6 +826,10 @@ void si5351aOutputOff(uint8_t clk)
 {
   i2cSendRegister(clk, 0x80);         // Refer to SiLabs AN619 to see bit values - 0x80 turns off the output stage
   si5351_reset = 1;                   // reset needed when we turn the clock back on
+  digitalWrite(BAND0,HIGH);           // turn off the band relays, save some current.
+  digitalWrite(BAND1,HIGH);
+  digitalWrite(BAND5,HIGH);
+
 }
 
 //
@@ -794,6 +852,8 @@ void si5351aSetFrequency(uint32_t frequency)
   uint32_t num;
   uint32_t denom;
   uint32_t divider;
+
+  set_band_relays(frequency);
 
   divider = 900000000 / frequency;    // Calculate the division ratio. 900,000,000 is the maximum internal PLL frequency: 900MHz
   if (divider % 2) divider--;         // Ensure an even integer division ratio
