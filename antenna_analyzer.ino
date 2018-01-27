@@ -81,6 +81,12 @@
 #include <LiquidCrystal.h>
 // #include <Wire.h>   // using Han's I2C code instead of the wire library
 
+// compile time option
+// uncomment for a CSV type export.  The default is an export of just the SWR values suitable
+// for plotting with the Arduino Serial Plotter tool.
+//#define CSV_EXPORT
+
+
 // SI5351 routines from Hans Summers demo code
 #define I2C_START 0x08                  // I2C interface constants
 #define I2C_START_RPT 0x10
@@ -489,6 +495,9 @@ static byte csv_active = 0;
 
   if( mstate == 7 ){     // start sweep
     add_val = (end_freq - start_freq) / 1000;
+    #ifndef CSV_EXPORT
+      if( csv_active ) add_val = (end_freq - start_freq) / 500;  // arduino plot tool wants 500 values to plot
+    #endif
     bar_add = (end_freq - start_freq) / 17;
     bar_val = start_freq + bar_add;
     freq = start_freq - add_val;    // adjust as it will be set back to start below
@@ -496,9 +505,13 @@ static byte csv_active = 0;
     ++mstate;
     lcd.setCursor(0,1);
     si5351_reset = 1;
-    if( csv_active ){    // print the header
-      Serial.println("Frequency,SWR");
-    }
+    
+    #ifdef CSV_EXPORT
+       if( csv_active ){    // print the header
+         Serial.println("Frequency,SWR");
+       }
+    #endif
+    
     return;    
   }
     // else continue sweep
@@ -533,7 +546,10 @@ static byte csv_active = 0;
     else lcd.write(c);                 // using the special LCD characters
   }
   if( csv_active ){
-    Serial.print(freq);   Serial.write(',');  Serial.println(new_swr,2);
+    #ifdef CSV_EXPORT
+       Serial.print(freq);   Serial.write(',');
+    #endif
+    Serial.println(new_swr,2);    // default export for the arduino plotting tool
   }
 }
 
@@ -643,6 +659,11 @@ float volts;
   }
   val >>= 2;  
   rev = (float)val;
+  
+  //  debug.  What are the voltage levels
+     // volts = 5.0 * ( fwd / 1024.0 );
+     // lcd.setCursor(9,1);
+     // lcd.print("FWD "); lcd.print(volts,2);
 
   if( rev > 5.0 ){    // adjust for diode drop
     rev += FUDGE;
